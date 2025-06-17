@@ -14,14 +14,31 @@ const MODEL_PATHS = {
     }
 };
 
-let models = {
-    model1: null,
-    model2: null,
-    model3: null
+// 상태 관리
+let state = {
+    models: {
+        model1: null,
+        model2: null,
+        model3: null
+    },
+    webcam: null,
+    isWebcamActive: false,
+    lastPredictionTime: 0,
+    predictionInterval: 10,
+    currentMode: 'camera' // 'camera' 또는 'image'
 };
 
-let webcam = null;
-let isWebcamActive = false;
+// DOM 요소
+const elements = {
+    webcamContainer: document.getElementById('webcam-container'),
+    imageContainer: document.getElementById('image-container'),
+    uploadedImage: document.getElementById('uploaded-image'),
+    result: document.getElementById('result'),
+    webcamButton: document.getElementById('webcam-button'),
+    webcamVideo: document.getElementById('webcam'),
+    fileUpload: document.getElementById('file-upload'),
+    uploadButton: document.getElementById('upload-button')
+};
 
 // 메타데이터 로드
 async function loadMetadata(path) {
@@ -32,19 +49,21 @@ async function loadMetadata(path) {
 // 모델 로드
 async function loadModels() {
     try {
-        document.getElementById('result').textContent = "모델을 불러오는 중입니다...";
+        elements.result.textContent = "모델을 불러오는 중입니다...";
 
         // 각 모델과 메타데이터 로드
         for (const [key, paths] of Object.entries(MODEL_PATHS)) {
             const metadata = await loadMetadata(paths.metadata);
-            models[key] = await tmImage.load(paths.model, metadata);
+            state.models[key] = await tmImage.load(paths.model, metadata);
         }
 
         console.log("모든 모델이 로드되었습니다.");
-        document.getElementById('result').textContent = "입력 방식을 선택해주세요";
+        elements.result.textContent = "카메라를 시작합니다...";
+        // 모델 로드 후 자동으로 웹캠 시작
+        await startWebcam();
     } catch (error) {
         console.error("모델 로드 중 오류 발생:", error);
-        document.getElementById('result').textContent = "모델 로드 중 오류가 발생했습니다. 페이지를 새로고침 해주세요.";
+        elements.result.textContent = "모델 로드 중 오류가 발생했습니다. 페이지를 새로고침 해주세요.";
     }
 }
 
@@ -52,35 +71,43 @@ async function loadModels() {
 async function initWebcam() {
     try {
         const flip = true;
-        webcam = new tmImage.Webcam(400, 300, flip);
-        await webcam.setup();
-        const webcanElement = document.getElementById('webcam');
-        webcanElement.srcObject = webcam.webcam.srcObject;
+        state.webcam = new tmImage.Webcam(400, 300, flip);
+        await state.webcam.setup();
+        elements.webcamVideo.srcObject = state.webcam.webcam.srcObject;
+        await new Promise((resolve) => {
+            elements.webcamVideo.onloadeddata = () => resolve();
+        });
     } catch (error) {
         console.error("웹캠 초기화 중 오류 발생:", error);
-        document.getElementById('result').textContent = "웹캠을 시작할 수 없습니다.";
+        elements.result.textContent = "웹캠을 시작할 수 없습니다.";
+        throw error;
     }
 }
 
 // 예측 실행
 async function predict(image) {
     try {
-        if (!models.model1 || !models.model2 || !models.model3) {
+        if (!state.models.model1 || !state.models.model2 || !state.models.model3) {
             throw new Error("모델이 아직 로드되지 않았습니다.");
         }
 
+        const currentTime = Date.now();
+        if (currentTime - state.lastPredictionTime < state.predictionInterval) {
+            return;
+        }
+        state.lastPredictionTime = currentTime;
+
         const results = {
-            model1: await models.model1.predict(image),
-            model2: await models.model2.predict(image),
-            model3: await models.model3.predict(image)
+            model1: await state.models.model1.predict(image),
+            model2: await state.models.model2.predict(image),
+            model3: await state.models.model3.predict(image)
         };
 
         // 각 모델의 예측 결과 분석
         const modelResults = {};
-        let validResultCount = 0; // '이외'가 아닌 결과의 수를 카운트
+        let validResultCount = 0;
 
         for (const [modelName, predictions] of Object.entries(results)) {
-            // 가장 높은 확률을 가진 클래스와 그 확률 찾기
             let maxProb = 0;
             let maxClass = '';
             predictions.forEach((p) => {
@@ -94,18 +121,12 @@ async function predict(image) {
                 probability: maxProb
             };
 
-            // '이외'가 아닌 결과 카운트
             if (maxClass !== '이외') {
                 validResultCount++;
             }
         }
 
-        // 결과 처리
-        const resultDiv = document.getElementById('result');
-        const detailedResultDiv = document.getElementById('detailed-result');
-
         if (validResultCount === 1) {
-            // 딱 하나의 모델만 '이외'가 아닌 결과를 출력한 경우
             for (const [modelName, result] of Object.entries(modelResults)) {
                 if (result.className !== '이외') {
                     const modelRange = {
@@ -113,14 +134,11 @@ async function predict(image) {
                         model2: "4~6",
                         model3: "7~9"
                     };
-                    resultDiv.textContent = `${modelRange[modelName]} 범위의 숫자입니다. (확률: ${(result.probability * 100).toFixed(1)}%)`;
-                    detailedResultDiv.textContent = `예측된 숫자: ${result.className}`;
-                    console.log(`단일 모델 예측 결과: ${modelName}이(가) ${result.className} 클래스를 ${(result.probability * 100).toFixed(1)}% 확률로 예측`);
+                    elements.result.textContent = `감지된 숫자: ${result.className} (${modelRange[modelName]} 범위, ${(result.probability * 100).toFixed(1)}%)`;
                     return;
                 }
             }
         } else if (validResultCount > 1) {
-            // 여러 모델이 '이외'가 아닌 결과를 출력한 경우
             let bestModel = null;
             let bestProb = 0;
             let bestClass = '';
@@ -139,109 +157,127 @@ async function predict(image) {
                     model2: "4~6",
                     model3: "7~9"
                 };
-                resultDiv.textContent = `${modelRange[bestModel]} 범위의 숫자입니다. (확률: ${(bestProb * 100).toFixed(1)}%)`;
-                detailedResultDiv.textContent = `예측된 숫자: ${bestClass}`;
-                console.log(`다중 모델 중 최고 예측 결과: ${bestModel}이(가) ${(bestProb * 100).toFixed(1)}% 확률로 예측`);
+                elements.result.textContent = `감지된 숫자: ${bestClass} (${modelRange[bestModel]} 범위, ${(bestProb * 100).toFixed(1)}%)`;
                 return;
             }
         }
 
-        // 모든 모델이 '이외'를 출력한 경우
-        resultDiv.textContent = "숫자를 정확하게 인식할 수 없습니다. (모든 모델이 '이외' 예측)";
-        detailedResultDiv.textContent = "";
-
-        // 디버깅을 위한 상세 결과 출력
-        console.log('모델별 예측 결과:', modelResults);
-        console.log('유효한 예측 수:', validResultCount);
-        
+        elements.result.textContent = "숫자를 찾는 중...";
     } catch (error) {
         console.error("예측 중 오류 발생:", error);
-        document.getElementById('result').textContent = "예측 중 오류가 발생했습니다.";
-        document.getElementById('detailed-result').textContent = "";
+        elements.result.textContent = "예측 중 오류가 발생했습니다.";
     }
 }
 
-// 입력 방식 선택 처리
-document.querySelectorAll('input[name="input-type"]').forEach(radio => {
-    radio.addEventListener('change', (e) => {
-        // 모든 컨테이너와 버튼 숨기기
-        document.getElementById('webcam-container').classList.remove('active-container');
-        document.getElementById('image-container').classList.remove('active-container');
-        document.getElementById('webcam-button').classList.remove('active-button');
-        document.getElementById('upload-button').classList.remove('active-button');
-
-        // 웹캠이 활성화되어 있다면 중지
-        if (isWebcamActive) {
-            webcam.stop();
-            isWebcamActive = false;
-            document.getElementById('webcam-button').textContent = "카메라 시작";
+// 웹캠 시작
+async function startWebcam() {
+    try {
+        if (!state.webcam) {
+            await initWebcam();
         }
-
-        // 선택된 입력 방식에 따라 UI 표시
-        if (e.target.value === 'camera') {
-            document.getElementById('webcam-container').classList.add('active-container');
-            document.getElementById('webcam-button').classList.add('active-button');
-        } else if (e.target.value === 'image') {
-            document.getElementById('image-container').classList.add('active-container');
-            document.getElementById('upload-button').classList.add('active-button');
+        await state.webcam.play();
+        state.isWebcamActive = true;
+        state.currentMode = 'camera';
+        
+        updateUIForWebcam();
+        
+        // 실시간 예측
+        async function loop() {
+            if (state.isWebcamActive) {
+                await predict(state.webcam.canvas);
+                window.requestAnimationFrame(loop);
+            }
         }
+        loop();
+    } catch (error) {
+        console.error("카메라 시작 중 오류 발생:", error);
+        elements.result.textContent = "카메라를 시작할 수 없습니다.";
+    }
+}
 
-        document.getElementById('result').textContent = "준비되었습니다";
-        document.getElementById('detailed-result').textContent = "";
+// 웹캠 중지
+function stopWebcam() {
+    if (state.isWebcamActive && state.webcam) {
+        state.webcam.stop();
+        state.isWebcamActive = false;
+        elements.webcamButton.textContent = '카메라 시작';
+        elements.result.textContent = "카메라가 중지되었습니다";
+    }
+}
+
+// UI 업데이트 함수
+function updateUIForWebcam() {
+    elements.webcamContainer.style.display = 'block';
+    elements.imageContainer.style.display = 'none';
+    elements.webcamButton.textContent = '카메라 중지';
+}
+
+function updateUIForImage() {
+    elements.webcamContainer.style.display = 'none';
+    elements.imageContainer.style.display = 'block';
+    elements.webcamButton.textContent = '카메라 시작';
+}
+
+// 이미지 모드로 전환
+function switchToImageMode() {
+    stopWebcam();
+    state.currentMode = 'image';
+    updateUIForImage();
+}
+
+// 웹캠 모드로 전환
+async function switchToWebcamMode() {
+    try {
+        elements.uploadedImage.src = '';
+        state.currentMode = 'camera';
+        await startWebcam();
+    } catch (error) {
+        console.error("웹캠 모드 전환 중 오류 발생:", error);
+        elements.result.textContent = "카메라 전환 중 오류가 발생했습니다.";
+    }
+}
+
+// 이벤트 리스너 설정
+function setupEventListeners() {
+    // 웹캠 버튼 이벤트
+    elements.webcamButton.addEventListener('click', async () => {
+        if (state.currentMode === 'image') {
+            await switchToWebcamMode();
+        } else if (state.isWebcamActive) {
+            stopWebcam();
+        } else {
+            await startWebcam();
+        }
     });
-});
 
-// 웹캠 시작/중지
-document.getElementById('webcam-button').addEventListener('click', async () => {
-    if (!isWebcamActive) {
-        try {
-            if (!webcam) {
-                await initWebcam();
-            }
-            await webcam.play();
-            isWebcamActive = true;
-            document.getElementById('webcam-button').textContent = "카메라 중지";
-            
-            // 실시간 예측
-            async function loop() {
-                if (isWebcamActive) {
-                    await predict(webcam.canvas);
-                    window.requestAnimationFrame(loop);
-                }
-            }
-            loop();
-        } catch (error) {
-            console.error("카메라 시작 중 오류 발생:", error);
-            document.getElementById('result').textContent = "카메라를 시작할 수 없습니다.";
-        }
-    } else {
-        webcam.stop();
-        isWebcamActive = false;
-        document.getElementById('webcam-button').textContent = "카메라 시작";
-        document.getElementById('result').textContent = "카메라가 중지되었습니다";
-    }
-});
+    // 이미지 업로드 버튼 이벤트
+    elements.uploadButton.addEventListener('click', () => {
+        elements.fileUpload.click();
+    });
 
-// 이미지 업로드
-document.getElementById('upload-button').addEventListener('click', () => {
-    document.getElementById('file-upload').click();
-});
+    // 파일 업로드 처리
+    elements.fileUpload.addEventListener('change', async (e) => {
+        if (e.target.files && e.target.files[0]) {
+            switchToImageMode();
+            elements.result.textContent = "이미지를 분석하는 중...";
 
-document.getElementById('file-upload').addEventListener('change', async (e) => {
-    if (e.target.files && e.target.files[0]) {
-        const reader = new FileReader();
-        reader.onload = async function(e) {
-            const img = document.getElementById('uploaded-image');
-            img.src = e.target.result;
-
-            // 이미지가 로드되면 예측 실행
-            img.onload = async () => {
-                await predict(img);
+            const reader = new FileReader();
+            reader.onload = async function(e) {
+                elements.uploadedImage.src = e.target.result;
+                elements.uploadedImage.onload = async () => {
+                    await predict(elements.uploadedImage);
+                };
             };
-        };
-        reader.readAsDataURL(e.target.files[0]);
-    }
-});
+            reader.readAsDataURL(e.target.files[0]);
+        }
+    });
+}
 
-// 페이지 로드 시 모델 로드
-loadModels(); 
+// 초기화 및 시작
+async function initialize() {
+    setupEventListeners();
+    await loadModels();
+}
+
+// 페이지 로드 시 초기화
+initialize(); 
