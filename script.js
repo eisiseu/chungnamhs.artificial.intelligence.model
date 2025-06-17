@@ -135,6 +135,7 @@ async function predict(image) {
                         model3: "7~9"
                     };
                     elements.result.textContent = `감지된 숫자: ${result.className} (${modelRange[modelName]} 범위, ${(result.probability * 100).toFixed(1)}%)`;
+                    console.log(`${result.className} ${modelRange[modelName]} ${(result.probability * 100).toFixed(1)}`);
                     return;
                 }
             }
